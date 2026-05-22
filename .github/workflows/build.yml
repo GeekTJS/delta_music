@@ -1,0 +1,447 @@
+name: Build Delta Music
+
+on:
+  push:
+    branches: [main, develop]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      build_mode:
+        description: Build mode
+        required: true
+        default: debug
+        type: choice
+        options:
+          - debug
+          - release
+      platform:
+        description: Target platform
+        required: true
+        default: android
+        type: choice
+        options:
+          - android
+          - ios
+          - all
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.19.6'
+  JAVA_VERSION: '17'
+  GRADLE_OPTS: '-Dorg.gradle.jvmargs=-Xmx4g -Dorg.gradle.parallel=true'
+
+jobs:
+  analyze:
+    name: Analyze Code
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Cache Pub Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.yaml', 'pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Generate Code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Verify Build Runner Output
+        run: |
+          echo "Checking generated files..."
+          find . -name "*.g.dart" | head -20
+          find . -name "*.freezed.dart" | head -20
+
+      - name: Run Dart Analyzer
+        run: flutter analyze
+
+      - name: Check Dart Format
+        run: dart format --set-exit-if-changed lib/
+
+  test:
+    name: Run Tests
+    needs: analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Cache Pub Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.yaml', 'pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Generate Code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Run Flutter Tests
+        run: flutter test --coverage --machine > test_report.json
+
+      - name: Upload Test Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-report
+          path: test_report.json
+
+  build-android-debug:
+    name: Build Android Debug APK
+    needs: [analyze, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Cache Pub Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.yaml', 'pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Generate Code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build Debug APK
+        run: flutter build apk --debug --split-per-abi
+
+      - name: Upload Debug APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-apks
+          path: |
+            build/app/outputs/flutter-apk/app-armeabi-v7a-debug.apk
+            build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk
+            build/app/outputs/flutter-apk/app-x86_64-debug.apk
+          if-no-files-found: warn
+
+      - name: Upload Universal Debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-universal-apk
+          path: |
+            build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: warn
+
+  build-android-release:
+    name: Build Android Release APK
+    needs: [analyze, test]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            .gradle
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Cache Pub Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.yaml', 'pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Generate Code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Decode Keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        if: env.KEYSTORE_BASE64 != ''
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > android/app/upload-keystore.jks
+
+      - name: Setup Signing Properties
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        if: env.KEYSTORE_PASSWORD != ''
+        run: |
+          cat > android/key.properties << EOF
+          storePassword=$KEYSTORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=upload-keystore.jks
+          EOF
+
+      - name: Build Release APK
+        run: flutter build apk --release --split-per-abi
+
+      - name: Build Release AppBundle
+        run: flutter build appbundle --release
+
+      - name: Upload Release APKs
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-apks
+          path: |
+            build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+            build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+            build/app/outputs/flutter-apk/app-x86_64-release.apk
+          if-no-files-found: warn
+
+      - name: Upload Release AppBundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-aab
+          path: build/app/outputs/bundle/release/app-release.aab
+          if-no-files-found: warn
+
+  build-ios:
+    name: Build iOS IPA
+    needs: [analyze, test]
+    runs-on: macos-13
+    timeout-minutes: 45
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Cache Pub Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.yaml', 'pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Generate Code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Install CocoaPods
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Build iOS (Debug)
+        if: github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/tags/v')
+        run: flutter build ios --debug --no-codesign
+
+      - name: Build iOS (Release with Signing)
+        if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+        env:
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+          BUILD_CERTIFICATE_BASE64: ${{ secrets.BUILD_CERTIFICATE_BASE64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+          BUILD_PROVISION_PROFILE_BASE64: ${{ secrets.BUILD_PROVISION_PROFILE_BASE64 }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: flutter build ios --release --no-codesign
+
+      - name: Upload iOS Build
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-build
+          path: |
+            build/ios/iphoneos/Runner.app
+            build/ios/iphoneos/Runner.app.dSYM.zip
+          if-no-files-found: warn
+
+  create-release:
+    name: Create GitHub Release
+    needs: [build-android-release, build-ios]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Generate Release Notes
+        id: release_notes
+        run: |
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo "## 三角洲音乐 Release ${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "### 下载" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "#### Android" >> $GITHUB_OUTPUT
+          echo "- [arm64-v8a APK](./android-release-apks/app-arm64-v8a-release.apk)" >> $GITHUB_OUTPUT
+          echo "- [armeabi-v7a APK](./android-release-apks/app-armeabi-v7a-release.apk)" >> $GITHUB_OUTPUT
+          echo "- [x86_64 APK](./android-release-apks/app-x86_64-release.apk)" >> $GITHUB_OUTPUT
+          echo "- [AppBundle (Play Store)](./android-release-aab/app-release.aab)" >> $GITHUB_OUTPUT
+          echo "" >> $GITHUB_OUTPUT
+          echo "#### iOS" >> $GITHUB_OUTPUT
+          echo "- [Runner.app](./ios-build/Runner.app)" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Delta Music ${{ github.ref_name }}
+          body: ${{ steps.release_notes.outputs.notes }}
+          draft: false
+          prerelease: false
+          files: |
+            android-release-apks/app-armeabi-v7a-release.apk
+            android-release-apks/app-arm64-v8a-release.apk
+            android-release-apks/app-x86_64-release.apk
+            android-release-aab/app-release.aab
+
+  build-on-demand:
+    name: On-Demand Build
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Cache Pub Dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            .dart_tool
+          key: ${{ runner.os }}-pub-${{ hashFiles('pubspec.yaml', 'pubspec.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pub-
+
+      - name: Install Dependencies
+        run: flutter pub get
+
+      - name: Generate Code
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - name: Build ${{ github.event.inputs.platform }} (${{ github.event.inputs.build_mode }})
+        run: |
+          if [ "${{ github.event.inputs.platform }}" = "android" ] || [ "${{ github.event.inputs.platform }}" = "all" ]; then
+            flutter build apk --${{ github.event.inputs.build_mode }} --split-per-abi
+          fi
+          if [ "${{ github.event.inputs.platform }}" = "ios" ] || [ "${{ github.event.inputs.platform }}" = "all" ]; then
+            flutter build ios --${{ github.event.inputs.build_mode }} --no-codesign
+          fi
+
+      - name: Upload APKs
+        uses: actions/upload-artifact@v4
+        if: github.event.inputs.platform == 'android' || github.event.inputs.platform == 'all'
+        with:
+          name: on-demand-android-${{ github.event.inputs.build_mode }}
+          path: build/app/outputs/flutter-apk/*.apk
+          if-no-files-found: warn
